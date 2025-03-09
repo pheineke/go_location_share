@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+    <style>
+        /* Set the height of the map container */
+        #map {
+            width: 100%;
+            height: 600px;
+        }
+    </style>
+
+</head>
+<body>
+    <div id="map"></div>
+
+    <script>
+        const my_id = Math.random().toString(36).substring(2, 15);
+
+        const x = document.getElementById("demo");
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const socketUrl = wsProtocol + '//' + window.location.host + '/ws';
+        console.log("WebSocket URL:", socketUrl);
+        const socket = new WebSocket(socketUrl);
+
+        var clients = [];
+        
+        function getLocation() {
+          if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(showPosition, handleError);
+          } else {
+            x.innerHTML = "Geolocation is not supported by this browser.";
+          }
+        }
+
+        
+        
+        function showPosition(position) {
+            socket.send(
+                JSON.stringify(
+                    {
+                        "client_id": my_id,
+                        "latitude": position.coords.latitude,
+                        "longitude": position.coords.longitude
+                    }
+                )
+            );
+        }
+
+        function handleError(error) {
+            console.error("Geolocation error:", error);
+        }
+        
+        socket.onopen = () => {
+            console.log("WebSocket connected");
+        };
+
+        socket.onmessage = function(event) {
+            const clients = JSON.parse(event.data); // Assuming the server sends JSON data in the format shown
+            // Clear all circles (if you want to update with new data every time)
+            map.eachLayer(layer => {
+                if (layer instanceof L.Circle) {
+                    map.removeLayer(layer);
+                }
+            });
+
+            // Add the new circles based on updated client data
+            clients.forEach(client => {
+                const color = getClientColor(client.client_id);
+                L.circle([client.latitude, client.longitude], {
+                    color: color,
+                    fillColor: color,
+                    fillOpacity: 0.5,
+                    radius: 2
+                }).addTo(map)
+                .bindPopup(`<b>Client ID:</b> ${client.client_id}<br><b>Latitude:</b> ${client.latitude}<br><b>Longitude:</b> ${client.longitude}`);
+            });
+        };
+
+        
+
+        socket.onerror = (error) => console.error("WebSocket Error:", error);
+
+        setInterval(() => {
+            getLocation();
+            console.log("Location send");
+        }, 2500);
+
+        const map = L.map('map').setView([49.423485, 7.754237], 13); // Default to a specific latitude and longitude
+
+        // Add OpenStreetMap tiles to the map
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        // Data received from the server (use the real data from your WebSocket)
+        
+
+        // Function to assign a color based on the client_id (just an example of random colors)
+        function getClientColor(clientId) {
+            const colors = ['red', 'blue', 'green', 'yellow', 'purple'];
+            // Simple color mapping (you can improve this logic)
+            const index = clientId.charCodeAt(0) % colors.length;
+            return colors[index];
+        }
+
+        // Loop through the clients and add a circle for each
+        clients.forEach(client => {
+            const color = getClientColor(client.client_id);
+
+            // Create a circle marker on the map
+            L.circle([client.latitude, client.longitude], {
+                color: color,         // Circle color
+                fillColor: color,     // Fill color (same as border)
+                fillOpacity: 0.5,     // Opacity of the fill
+                radius: 100           // Radius of the circle
+            }).addTo(map)
+            .bindPopup(`<b>Client ID:</b> ${client.client_id}<br><b>Latitude:</b> ${client.latitude}<br><b>Longitude:</b> ${client.longitude}`);
+        });
+
+
+
+    </script> 
+
+</body>
+</html>
+
