@@ -1,12 +1,15 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"sync"
 	"time"
+
+	"modules"
 
 	"github.com/gorilla/websocket"
 )
@@ -21,13 +24,26 @@ var (
 	clients     = make(map[string]Client)
 	connections = make(map[string]*websocket.Conn)
 	mu          sync.Mutex
+
+	database *sql.DB = modules.SetupDatabase()
 )
 
 func main() {
+	// Serve static files (like login.html) from the "./static" directory
 	fileServer := http.FileServer(http.Dir("./static"))
-	http.Handle("/", fileServer)
+	http.Handle("/static/", http.StripPrefix("/static", fileServer))
 
+	// When the root path "/" is visited, redirect to "/login.html"
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/static/login.html", http.StatusFound)
+	})
 	http.HandleFunc("/login", loginHandler)
+
+	http.HandleFunc("/register_", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/static/register.html", http.StatusFound)
+	})
+	http.HandleFunc("/register", registerHandler)
+
 	http.HandleFunc("/main", mainHandler)
 	http.HandleFunc("/ws", handleWebSocket)
 
@@ -49,13 +65,38 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "ParseForm() err: %v", err)
 		return
 	}
+
+	username := r.FormValue("name")
+	password := r.FormValue("address")
+
+	if err := database.LoginUser(database, username, password); err != nil {
+		return
+	}
+
+	http.Redirect(w, r, "/static/index.html", http.StatusFound)
+}
+
+func registerHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		fmt.Fprintf(w, "ParseForm() err: %v", err)
+		return
+	}
 	fmt.Fprintf(w, "POST request successful\n")
 
-	name := r.FormValue("name")
-	address := r.FormValue("address")
+	username := r.FormValue("name")
+	password := r.FormValue("address")
 
-	fmt.Fprintf(w, "Name = %s\n", name)
-	fmt.Fprintf(w, "Address = %s\n", address)
+	if err := modules.RegisterUser(database, username, password); err != nil {
+		return
+	}
+
+	http.Redirect(w, r, "/static/index.html", http.StatusFound)
+
 }
 
 func mainHandler(w http.ResponseWriter, r *http.Request) {
