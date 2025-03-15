@@ -4,13 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Document</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+
     <style>
         /* Set the height of the map container */
         #map {
             width: 100%;
-            height: 600px;
+            height: 50vh;
         }
     </style>
 </head>
@@ -18,8 +19,7 @@
     <div id="map"></div>
     <p id="id_field"></p>
     <script>
-        const my_id = Math.random().toString(36).substring(2, 15);
-        document.getElementById('id_field').innerHTML = my_id;
+        document.getElementById("id_field").innerText = username + " " + id;
 
         // Global dictionary to hold the client markers
         var CLIENTS = {};
@@ -46,7 +46,8 @@
 
         function showPosition(position) {
             socket.send(JSON.stringify({
-                "client_id": my_id,
+                "id": id,
+                "username": username,
                 "latitude": position.coords.latitude,
                 "longitude": position.coords.longitude
             }));
@@ -59,27 +60,34 @@
         socket.onopen = () => {
             console.log("WebSocket connected");
         };
+        socket.onclose = () => {
+            console.log("WebSocket disconnected");
+        }
 
         // On receiving an update from the server, update or add the client marker
         socket.onmessage = function(event) {
+            console.log("Got Location Data ", event.data)
+
+            getLocation();
+
             const clients = JSON.parse(event.data); // Expected to be an array of clients
 
             clients.forEach(client => {
                 // If marker exists update the position and popup content
-                if (CLIENTS.hasOwnProperty(client.client_id)) {
-                    CLIENTS[client.client_id]['latitude'] = client.latitude;
-                    CLIENTS[client.client_id]['longitude'] = client.longitude;
+                if (CLIENTS.hasOwnProperty(client.id)) {
+                    CLIENTS[client.id]['latitude'] = client.latitude;
+                    CLIENTS[client.id]['longitude'] = client.longitude;
 
-                    const marker = CLIENTS[client.client_id]['object'];
+                    const marker = CLIENTS[client.id]['object'];
                     marker.setLatLng([client.latitude, client.longitude]);
                     marker.setPopupContent(
-                        `<b>Client ID:</b> ${client.client_id}<br>
+                        `<b>Username:</b> ${client.username}<br>
                          <b>Latitude:</b> ${client.latitude}<br>
                          <b>Longitude:</b> ${client.longitude}`
                     );
                 } else {
                     // Create a new marker for this client
-                    const color = getClientColor(client.client_id);
+                    const color = client.color;
                     const marker = L.circle([client.latitude, client.longitude], {
                             color: color,
                             fillColor: color,
@@ -87,12 +95,13 @@
                             radius: 2
                     }).addTo(map)
                     .bindPopup(
-                        `<b>Client ID:</b> ${client.client_id}<br>
+                        `<b>Client ID:</b> ${client.id}<br>
                          <b>Latitude:</b> ${client.latitude}<br>
                          <b>Longitude:</b> ${client.longitude}`
                     );
-                    CLIENTS[client.client_id] = {
-                        'client_id': client.client_id,
+                    CLIENTS[client.id] = {
+                        'client_id': client.id,
+                        'username': client.username,
                         'latitude': client.latitude,
                         'longitude': client.longitude,
                         'object': marker
@@ -100,7 +109,7 @@
                 }
             });
 
-            const receivedIds = clients.map(client => client.client_id);
+            const receivedIds = clients.map(client => client.id);
             Object.keys(CLIENTS).forEach(clientId => {
                 if (!receivedIds.includes(clientId)) {
                     map.removeLayer(CLIENTS[clientId].object);
@@ -112,17 +121,12 @@
         socket.onerror = (error) => console.error("WebSocket Error:", error);
 
         // Regularly get the location and send updates
-        setInterval(() => {
-            getLocation();
-            console.log("Location sent");
-        }, 2500);
+        // setInterval(() => {
+        //     getLocation();
+        //     console.log("Location sent");
+        // }, 2500);
 
         // Function to assign a color based on the client_id
-        function getClientColor(clientId) {
-            const colors = ['red', 'blue', 'green', 'yellow', 'purple'];
-            const index = clientId.charCodeAt(0) % colors.length;
-            return colors[index];
-        }
     </script>
 </body>
 </html>
