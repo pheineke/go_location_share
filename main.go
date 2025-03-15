@@ -76,16 +76,18 @@ func main() {
 	log.Fatal(http.ListenAndServeTLS(":8080", "server.crt", "server.key", nil))
 }
 
-func setSession(w http.ResponseWriter, username string) {
-	sessionID := strconv.Itoa(rand.Intn(1000000000))
-	sessions[sessionID] = username
+func setSession(w http.ResponseWriter, id string) string {
+	cookieValue := id + "-" + strconv.Itoa(rand.Intn(10000))
+	sessions[cookieValue] = id
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session_id",
-		Value:    sessionID,
+		Value:    cookieValue,
 		HttpOnly: true,
 		Path:     "/",
 	})
+
+	return cookieValue
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
@@ -103,13 +105,20 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := LoginUser(database, loginData.Username, loginData.Password); err != nil {
+	unique_id, err := LoginUser(database, loginData.Username, loginData.Password)
+	if err != nil {
 		fmt.Println("Login failed:", err)
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
 
-	setSession(w, loginData.Username)
+	cookie_id := setSession(w, unique_id)
+
+	clients[cookie_id] = Client{
+		ID:       unique_id,
+		Username: loginData.Username,
+		COLOR:    hexcolor.Format(uint8(rand.Intn(255)), uint8(rand.Intn(255)), uint8(rand.Intn(255))),
+	}
 
 	http.Redirect(w, r, "/main", http.StatusFound)
 }
@@ -127,13 +136,21 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := RegisterUser(registerData.Username, registerData.Password); err != nil {
+	unique_id, err := RegisterUser(registerData.Username, registerData.Password)
+
+	if err != nil {
 		fmt.Println("Registration failed:", err)
 		http.Redirect(w, r, "/", http.StatusFound)
 		return // STOP execution
 	}
 
-	setSession(w, registerData.Username)
+	cookieValue := setSession(w, unique_id)
+
+	clients[cookieValue] = Client{
+		ID:       unique_id,
+		Username: registerData.Username,
+		COLOR:    hexcolor.Format(uint8(rand.Intn(255)), uint8(rand.Intn(255)), uint8(rand.Intn(255))),
+	}
 
 	http.Redirect(w, r, "/main", http.StatusFound)
 }
@@ -162,7 +179,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username, validSession := sessions[cookie.Value]
+	id, validSession := sessions[cookie.Value]
 	if !validSession {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
@@ -178,7 +195,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 
 	customHTML := fmt.Sprintf(
 		`<script>var username = "%s"; var id = "%s";</script>%s`,
-		username, cookie.Value, string(htmlData))
+		clients[cookie.Value].Username, id, string(htmlData))
 
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(customHTML))
@@ -189,12 +206,16 @@ var upgrader = websocket.Upgrader{
 }
 
 func processClientLocation(cookieValue string, client Client) {
-	client.ID = cookieValue
-	client.Username = sessions[cookieValue]
-	client.COLOR = hexcolor.Format(uint8(rand.Intn(255)), uint8(rand.Intn(255)), uint8(rand.Intn(255)))
-
 	mu.Lock()
-	clients[cookieValue] = client
+	existing, exists := clients[cookieValue]
+	if exists {
+		// Update only the fields that change (latitude, longitude, and last online if needed)
+		existing.Latitude = client.Latitude
+		existing.Longitude = client.Longitude
+		existing.LastOnline = client.LastOnline
+
+		clients[cookieValue] = existing
+	}
 	mu.Unlock()
 }
 
@@ -262,10 +283,26 @@ func broadcastClientData() {
 	for {
 		time.Sleep(1 * time.Second)
 
+		offlineUsers, err := fetchOfflineUsersDB()
+		if err != nil {
+			fmt.Println("Error fetching offline users: ", err)
+		}
+
 		mu.Lock()
-		clientData := make([]Client, 0, len(clients))
+		clientData := make([]Client, 0, len(clients)+len(offlineUsers))
+
+		// Prioritize online users
 		for _, client := range clients {
+			fmt.Println(client)
 			clientData = append(clientData, client)
+		}
+
+		// Append offline users who are not in the online list
+		for _, offlineUser := range offlineUsers {
+			fmt.Println(offlineUser)
+			if _, exists := clients[offlineUser.ID]; !exists {
+				clientData = append(clientData, offlineUser)
+			}
 		}
 		mu.Unlock()
 
@@ -280,7 +317,7 @@ func broadcastClientData() {
 
 		// Send message to each connection
 		mu.Lock()
-		for clientID, conn := range connections {
+		for clientCookie, conn := range connections {
 			go func(id string, c *websocket.Conn) {
 
 				if c != nil {
@@ -288,13 +325,12 @@ func broadcastClientData() {
 					if err != nil {
 						fmt.Println("Error sending message:", err)
 						// Connection might have been closed, so clean up
-						delete(clients, clientID)
-						delete(connections, clientID)
-						fmt.Println("Removed Client ", clientID)
-						mu.Unlock()
+						delete(clients, clientCookie)
+						delete(connections, clientCookie)
+						fmt.Println("Removed Client ", clientCookie)
 					}
 				}
-			}(clientID, conn)
+			}(clientCookie, conn)
 		}
 		mu.Unlock()
 	}
@@ -311,7 +347,7 @@ func SetupDatabase() *sql.DB {
 	// Create the table if it doesn't exist
 	query := `
 	CREATE TABLE IF NOT EXISTS users (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id TEXT NOT NULL PRIMARY KEY UNIQUE,
 		username TEXT NOT NULL UNIQUE,
 		password TEXT NOT NULL,
 		last_online TEXT NOT NULL
@@ -335,11 +371,14 @@ func checkPasswordHash(password, hash string) bool {
 	return err == nil
 }
 
-func RegisterUser(username, password string) error {
-	return RegisterUserDB(database, username, password)
+func RegisterUser(username, password string) (string, error) {
+	unique_id := strconv.Itoa(rand.Intn(1000000000))
+
+	return unique_id, RegisterUserDB(database, username, password, unique_id)
 }
 
-func RegisterUserDB(db *sql.DB, username, password string) error {
+func RegisterUserDB(db *sql.DB, username, password, id string) error {
+
 	// Check if the username already exists
 	var exists bool
 	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)", username).Scan(&exists)
@@ -356,26 +395,30 @@ func RegisterUserDB(db *sql.DB, username, password string) error {
 	}
 
 	// Insert new user into the database
-	_, err = db.Exec("INSERT INTO users (username, password, last_online) VALUES (?, ?, ?)", username, hashedPassword, LastOnline())
+	_, err = db.Exec("INSERT INTO users (id, username, password, last_online) VALUES (?, ?, ?, ?)", id, username, hashedPassword, LastOnline())
 	return err
 }
 
-func LoginUser(db *sql.DB, username, password string) error {
+func LoginUser(db *sql.DB, username, password string) (string, error) {
 	var storedPassword string
 	err := db.QueryRow("SELECT password FROM users WHERE username = ?", username).Scan(&storedPassword)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("username %s does not exist", username)
+			return "_", err
 		}
-		return err
+		return "_", err
 	}
 	if !checkPasswordHash(password, storedPassword) {
-		return fmt.Errorf("invalid password for user %s", username)
+		return "_", err
 	}
 	// Update last_online timestamp after successful login
 	db.Exec("UPDATE users SET last_online = ? WHERE username = ?", LastOnline(), username)
-
-	return nil
+	var userID string
+	err = db.QueryRow("SELECT id FROM users WHERE username = ?", username).Scan(&userID)
+	if err != nil {
+		return "_", err
+	}
+	return userID, nil
 }
 
 func LastOnline() string {
@@ -389,14 +432,46 @@ func UpdateLastOnline(client Client, cookieValue string) {
 
 	clients[cookieValue] = client
 
-	UpdateLastOnlineDB(database, client.Username, now)
+	UpdateLastOnlineDB(database, client.ID, now)
 }
 
 // UpdateLastOnline updates the last online timestamp for a given user in the database.
-func UpdateLastOnlineDB(db *sql.DB, username string, time string) {
+func UpdateLastOnlineDB(db *sql.DB, id string, time string) {
 	now := LastOnline() // e.g. "2006-01-02 15:04"
-	_, err := db.Exec("UPDATE users SET last_online = ? WHERE username = ?", now, username)
+	_, err := db.Exec("UPDATE users SET last_online = ? WHERE id = ?", now, id)
 	if err != nil {
-		fmt.Println("Error updating last online for", username, ":", err)
+		fmt.Println("Error updating last online for", id, ":", err)
 	}
+}
+
+func fetchOfflineUsersDB() ([]Client, error) {
+	var offlineUsers []Client
+	rows, err := database.Query("SELECT id, username, last_online FROM users")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var user Client
+		if err := rows.Scan(&user.ID, &user.Username, &user.LastOnline); err != nil {
+			return nil, err
+		}
+
+		// Filter out users who are online by checking if any client has the same username.
+		isOnline := false
+		mu.Lock()
+		for _, onlineClient := range clients {
+			if onlineClient.ID == user.ID {
+				isOnline = true
+				break
+			}
+		}
+		mu.Unlock()
+
+		if !isOnline {
+			offlineUsers = append(offlineUsers, user)
+		}
+	}
+	return offlineUsers, nil
 }

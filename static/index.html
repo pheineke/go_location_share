@@ -203,7 +203,8 @@
                     lbEntry.id = "lb-" + client.id;
                     leaderboard.appendChild(lbEntry);
                 }
-                lbEntry.innerHTML = `<strong>${client.username === username ? "(You)" : ""} ${client.username}</strong><br>— Lat: ${client.latitude.toFixed(4)}, Lng: ${client.longitude.toFixed(4)}, Last Online: ${client.lastonline}`;
+                console.log(client.username)
+                lbEntry.innerHTML = `<strong>${client.id === id ? "(You)" : ""} ${client.username}</strong><br>— Lat: ${client.latitude.toFixed(4)}, Lng: ${client.longitude.toFixed(4)}, Last Online: ${client.lastonline}`;
 
                 
             });
