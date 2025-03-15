@@ -24,10 +24,10 @@ RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
 # Dateien vom Builder kopieren
 COPY --from=builder /app/server /app/
-COPY --from=builder /app/ssl-keygen /app/
+COPY --from=builder /app/ssl_keygen.sh /app/
 
 # SSL-Skript ausführbar machen und ausführen
-RUN chmod +x /app/ssl-keygen && /app/ssl-keygen
+RUN chmod +x /app/ssl_keygen.sh && /app/ssl_keygen.sh
 
 # Port für den Go-Server freigeben
 EXPOSE 1313
