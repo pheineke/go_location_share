@@ -25,14 +25,51 @@
 </head>
 <body>
     <h1>Login</h1>
-    <form method="POST" action="/login">     
+    <form id="login-form">     
         <label>Username</label>
-        <input name="username" type="text" value=""/><br>
+        <input id="username" name="username" type="text" required/><br>
         <label>Password</label>
-        <input name="password" type="password" value="" placeholder="Password"/>
-        <input type="submit" value="submit" />
+        <input id="password" name="password" type="password" placeholder="Password" required/>
+        <input type="submit" value="Submit" />
     </form>
     
     <a href="/register_">Register</a>
+
+    <script>
+        async function hashPassword(password) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(password);
+            const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+            return btoa(String.fromCharCode(...new Uint8Array(hashBuffer))); // Convert to Base64
+        }
+
+        document.getElementById("login-form").addEventListener("submit", async function(event) {
+            event.preventDefault();
+
+            const formData = new FormData(this);
+            const jsonObject = {};
+            for (let [key, value] of formData.entries()) {
+                if (key === 'password') {
+                    jsonObject[key] = await hashPassword(value);
+                } else {
+                    jsonObject[key] = value;
+                }
+            }
+
+            let response = await fetch("/login", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(jsonObject)
+            });
+
+            if (response.ok) {
+                window.location.href = "/main";
+            } else {
+                alert("Login failed");
+            }
+        });
+    </script>
 </body>
 </html>

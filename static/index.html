@@ -9,16 +9,104 @@
 
     <style>
         /* Set the height of the map container */
+        body {
+            display: flex;
+            flex-direction: column;
+            
+        }
         #map {
+            padding: 0;
             width: 100%;
+            height: 80vh;
+
+            z-index: 0;
+        }
+        #leaderboard-button {
+            position: fixed;
+            left: 50%;
+            transform: translateX(-50%);
+            bottom: 0;
+            transition: bottom 0.5s ease-in-out;
+            box-shadow: 0 2px 20px rgba(0, 0, 0, 0.3);
+
+            background-color: rgb(255, 255, 255);
+            height: 50px;
+            width: 200px;
+
+            padding-top: 20px;
+
+            text-align: center;
+            
+            z-index: 20;
+
+            border-top-left-radius: 25px;
+            border-top-right-radius: 25px;
+
+            font-size: 1.5em;
+            
+        }
+        #leaderboard {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: -50vh;
             height: 50vh;
+            background-color: #fff;
+            transition: bottom 0.5s ease-in-out;
+            padding: 5px;
+            z-index: 30;
+            box-shadow: 0 2px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        #leaderboard > .entry {
+            padding: 5px 10px;
+            text-align: left;
+            border-bottom: 1px solid #ccc;
+        }
+
+        #logout {
+            position: fixed;
+            left: 1;
+            bottom: 0;
+
+            padding: 0px 25px;
+            font-size: 1.5em;
         }
     </style>
 </head>
 <body>
     <div id="map"></div>
     <p id="id_field"></p>
+    <a id="logout" href="/logout"><p>Logout</p></a>
+
+    <div id="leaderboard-button">Leaderboard</div>
+    <div id="leaderboard"></div>
     <script>
+        // Setup leaderboard styles and state
+        const leaderboard = document.getElementById("leaderboard");
+
+
+        let leaderboardVisible = false;
+        const leaderboardButton = document.getElementById("leaderboard-button");
+        leaderboardButton.style.position = "fixed";
+        leaderboardButton.style.left = "50%";
+        leaderboardButton.style.transform = "translateX(-50%)";
+        leaderboardButton.style.bottom = "0";
+        leaderboardButton.style.transition = "bottom 0.5s ease-in-out";
+
+        leaderboardButton.addEventListener("click", () => {
+            if (leaderboardVisible) {
+            leaderboard.style.bottom = "-50vh";
+            leaderboardButton.style.bottom = "0";
+            } else {
+            leaderboard.style.bottom = "0";
+            leaderboardButton.style.bottom = "50vh";
+            }
+            leaderboardVisible = !leaderboardVisible;
+        });
+
+        
+
         document.getElementById("id_field").innerText = username + " " + id;
 
         // Global dictionary to hold the client markers
@@ -92,7 +180,7 @@
                             color: color,
                             fillColor: color,
                             fillOpacity: 0.5,
-                            radius: 2
+                            radius: getMarkerRadius()
                     }).addTo(map)
                     .bindPopup(
                         `<b>Client ID:</b> ${client.id}<br>
@@ -107,6 +195,17 @@
                         'object': marker
                     }
                 }
+
+                let lbEntry = document.getElementById("lb-" + client.id);
+                if (!lbEntry) {
+                    lbEntry = document.createElement("div");
+                    lbEntry.classList.add('entry')
+                    lbEntry.id = "lb-" + client.id;
+                    leaderboard.appendChild(lbEntry);
+                }
+                lbEntry.innerHTML = `<strong>${client.username === username ? "(You)" : ""} ${client.username}</strong><br>— Lat: ${client.latitude.toFixed(4)}, Lng: ${client.longitude.toFixed(4)}, Last Online: ${client.lastonline}`;
+
+                
             });
 
             const receivedIds = clients.map(client => client.id);
@@ -119,6 +218,20 @@
         };
 
         socket.onerror = (error) => console.error("WebSocket Error:", error);
+
+
+        function getMarkerRadius() {
+            const zoomLevel = map.getZoom();
+            return Math.max(100 - zoomLevel * 5, 5);
+        }
+
+        map.on('zoomend', function() {
+            // Update all markers when zoom level changes
+            Object.values(CLIENTS).forEach(client => {
+                const marker = client.object;
+                marker.setRadius(getMarkerRadius()); // Adjust the radius based on the new zoom level
+            });
+        });
 
         // Regularly get the location and send updates
         // setInterval(() => {

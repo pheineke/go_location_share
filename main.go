@@ -15,14 +15,21 @@ import (
 	"github.com/gorilla/websocket"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/reiver/go-hexcolor"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Client struct {
-	ID        string  `json:"id"`
-	Username  string  `json:"username"`
-	Latitude  float32 `json:"latitude"`
-	Longitude float32 `json:"longitude"`
-	COLOR     string  `json:"color"`
+	ID         string  `json:"id"`
+	Username   string  `json:"username"`
+	Latitude   float32 `json:"latitude"`
+	Longitude  float32 `json:"longitude"`
+	COLOR      string  `json:"color"`
+	LastOnline string  `json:"lastonline"`
+}
+
+type LoginData struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type ClientLocationResponse struct {
@@ -89,19 +96,20 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := r.ParseForm(); err != nil {
-		fmt.Fprintf(w, "ParseForm() err: %v", err)
-		http.Redirect(w, r, "/", http.StatusFound)
+	var loginData LoginData
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&loginData); err != nil {
+		http.Error(w, fmt.Sprintf("JSON decode error: %v", err), http.StatusBadRequest)
+		return
 	}
 
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-
-	if err := LoginUser(database, username, password); err != nil {
+	if err := LoginUser(database, loginData.Username, loginData.Password); err != nil {
+		fmt.Println("Login failed:", err)
 		http.Redirect(w, r, "/", http.StatusFound)
+		return
 	}
 
-	setSession(w, username)
+	setSession(w, loginData.Username)
 
 	http.Redirect(w, r, "/main", http.StatusFound)
 }
@@ -112,19 +120,20 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := r.ParseForm(); err != nil {
-		fmt.Fprintf(w, "ParseForm() err: %v", err)
+	var registerData LoginData
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&registerData); err != nil {
+		http.Error(w, fmt.Sprintf("JSON decode error: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-
-	if err := RegisterUser(database, username, password); err != nil {
+	if err := RegisterUser(registerData.Username, registerData.Password); err != nil {
+		fmt.Println("Registration failed:", err)
 		http.Redirect(w, r, "/", http.StatusFound)
+		return // STOP execution
 	}
 
-	setSession(w, username)
+	setSession(w, registerData.Username)
 
 	http.Redirect(w, r, "/main", http.StatusFound)
 }
@@ -148,8 +157,15 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 
 func mainHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("session_id")
-	if err != nil || cookie.Value == "" || sessions[cookie.Value] == "" {
+	if err != nil || cookie.Value == "" {
 		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+
+	username, validSession := sessions[cookie.Value]
+	if !validSession {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
 	}
 
 	htmlData, err := os.ReadFile("static/index.html")
@@ -160,7 +176,6 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Println("Main request")
 
-	username := sessions[cookie.Value]
 	customHTML := fmt.Sprintf(
 		`<script>var username = "%s"; var id = "%s";</script>%s`,
 		username, cookie.Value, string(htmlData))
@@ -232,6 +247,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		processClientLocation(cookie.Value, client)
+		UpdateLastOnline(client, cookie.Value)
 	}
 
 	// Cleanup after disconnection
@@ -297,7 +313,8 @@ func SetupDatabase() *sql.DB {
 	CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		username TEXT NOT NULL UNIQUE,
-		password TEXT NOT NULL
+		password TEXT NOT NULL,
+		last_online TEXT NOT NULL
 	);
 	`
 	_, err = db.Exec(query)
@@ -308,7 +325,21 @@ func SetupDatabase() *sql.DB {
 	return db
 }
 
-func RegisterUser(db *sql.DB, username, password string) error {
+func hashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return string(bytes), err
+}
+
+func checkPasswordHash(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
+}
+
+func RegisterUser(username, password string) error {
+	return RegisterUserDB(database, username, password)
+}
+
+func RegisterUserDB(db *sql.DB, username, password string) error {
 	// Check if the username already exists
 	var exists bool
 	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)", username).Scan(&exists)
@@ -319,8 +350,13 @@ func RegisterUser(db *sql.DB, username, password string) error {
 		return fmt.Errorf("username %s already exists", username)
 	}
 
+	hashedPassword, err := hashPassword(password)
+	if err != nil {
+		return err
+	}
+
 	// Insert new user into the database
-	_, err = db.Exec("INSERT INTO users (username, password) VALUES (?, ?)", username, password)
+	_, err = db.Exec("INSERT INTO users (username, password, last_online) VALUES (?, ?, ?)", username, hashedPassword, LastOnline())
 	return err
 }
 
@@ -333,8 +369,34 @@ func LoginUser(db *sql.DB, username, password string) error {
 		}
 		return err
 	}
-	if storedPassword != password {
+	if !checkPasswordHash(password, storedPassword) {
 		return fmt.Errorf("invalid password for user %s", username)
 	}
+	// Update last_online timestamp after successful login
+	db.Exec("UPDATE users SET last_online = ? WHERE username = ?", LastOnline(), username)
+
 	return nil
+}
+
+func LastOnline() string {
+	return time.Now().Format("2006-01-02 15:04")
+}
+
+func UpdateLastOnline(client Client, cookieValue string) {
+	now := LastOnline()
+
+	client.LastOnline = now
+
+	clients[cookieValue] = client
+
+	UpdateLastOnlineDB(database, client.Username, now)
+}
+
+// UpdateLastOnline updates the last online timestamp for a given user in the database.
+func UpdateLastOnlineDB(db *sql.DB, username string, time string) {
+	now := LastOnline() // e.g. "2006-01-02 15:04"
+	_, err := db.Exec("UPDATE users SET last_online = ? WHERE username = ?", now, username)
+	if err != nil {
+		fmt.Println("Error updating last online for", username, ":", err)
+	}
 }
